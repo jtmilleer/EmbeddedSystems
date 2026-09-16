@@ -1,0 +1,20 @@
+# Atmel Studio / VS IDE cache
+.vs/
+
+# Build output
+[Dd]ebug/
+[Rr]elease/
+
+# Build artifacts (in case any escape the folder rules above)
+*.hex
+*.lss
+*.map
+*.obj
+*.o
+*.tmp
+*.eep
+*.elf
+*.d
+*.cof
+*.eeprom
+*.srec
