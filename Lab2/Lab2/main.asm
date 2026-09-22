@@ -51,8 +51,8 @@ lut: .byte 16          ; 16-byte lookup table for hex digits 0-F
 	sbi DDRB, 1     ; PB1 (SRCLK) as output. pin 9 on board
 	sbi DDRB, 2     ; PB2 (RCLK) as output. pin 10 on board
 
-	cbi DDRD, 2     ; PD2 (button 1) as input. pin 2 on board (increment for test)
-	cbi DDRD, 3     ; PD3 (button 2) as input. pin 3 on board (decrement for test)
+	cbi DDRD, 2     ; PD2 (button B) as input. pin 2 on board (increment for test)
+	cbi DDRD, 3     ; PD3 (button A) as input. pin 3 on board (decrement for test)
 
 
 
