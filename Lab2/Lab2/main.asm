@@ -64,31 +64,12 @@ lut: .byte 16          ; 16-byte lookup table for hex digits 0-F
 
 
 main_loop:
-	sbic PIND, 2         ; skip next instr if PD2 is 0 (i.e. skip if pressed)
-	rjmp check_dec       ; not pressed, go check the other button
+	rcall delay_1s       ; swap for delay_10s to count every 10 sec
 	inc R20
 	andi R20, 0x0F       ; wrap counter to 0-15
 	mov R16, R20
 	rcall hex_to_seg     ; convert counter segment pattern
 	rcall display
-
-wait_release_inc:
-	sbis PIND, 2         ; wait here while PD2 is still 0 (still pressed)
-	rjmp wait_release_inc
-	rjmp main_loop
-
-check_dec:
-	sbic PIND, 3
-	rjmp main_loop
-	dec R20
-	andi R20, 0x0F       ; wrap counter to 0-15
-	mov R16, R20
-	rcall hex_to_seg     ; convert counter -> segment pattern
-	rcall display
-wait_release_dec:
-	sbis PIND, 3
-	rjmp wait_release_dec
-
 	rjmp main_loop
 
 
@@ -151,5 +132,44 @@ hex_to_seg:
 	pop R26
 	pop R19
 	pop R18
+	ret
+
+
+
+; busy-wait ~1 sec. trimmed by 182 cycles so one full main_loop
+; pass (delay + inc + hex_to_seg + display) = 16,000,000 cycles @ 16 MHz
+delay_1s:
+	push R21
+	push R22
+	push R23
+
+	ldi R21, 82
+	ldi R22, 43
+	ldi R23, 196          ; was 0 (256): 60 fewer inner loops = -180 cycles
+d1_loop:
+	dec R23
+	brne d1_loop
+	dec R22
+	brne d1_loop
+	dec R21
+	brne d1_loop
+	rjmp PC+1             ; 2-cycle pad (was lpm+nop = 4): -2 cycles
+
+	pop R23
+	pop R22
+	pop R21
+	ret
+
+
+
+; busy-wait 10 sec (calls delay_1s 10 times)
+delay_10s:
+	push R24
+	ldi R24, 10
+d10_loop:
+	rcall delay_1s
+	dec R24
+	brne d10_loop
+	pop R24
 	ret
 .exit
