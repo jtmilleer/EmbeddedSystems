@@ -9,13 +9,13 @@ lut: .byte 16          ; 16-byte lookup table for hex digits 0-F
 .cseg
 .org 0
 	; init table
-	ldi R16, 0x3F   ; 0
+	ldi R16, 0x5F   ; 0
 	sts lut, R16
 	ldi R16, 0x06   ; 1
 	sts lut+1, R16
-	ldi R16, 0x5B   ; 2
+	ldi R16, 0x3B   ; 2
 	sts lut+2, R16
-	ldi R16, 0x4F   ; 3
+	ldi R16, 0x2F   ; 3
 	sts lut+3, R16
 	ldi R16, 0x66   ; 4
 	sts lut+4, R16
@@ -33,9 +33,9 @@ lut: .byte 16          ; 16-byte lookup table for hex digits 0-F
 	sts lut+10, R16
 	ldi R16, 0x7C   ; b
 	sts lut+11, R16
-	ldi R16, 0x39   ; C
+	ldi R16, 0x59   ; C
 	sts lut+12, R16
-	ldi R16, 0x5E   ; d
+	ldi R16, 0x3E   ; d
 	sts lut+13, R16
 	ldi R16, 0x79   ; E
 	sts lut+14, R16
