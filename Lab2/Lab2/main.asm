@@ -16,7 +16,7 @@
 .def overflowed = R24   ; 1 = counted past F, showing "-"
 .def stopped    = R25   ; 1 = stopped, 0 = counting
 ; YH:YL (R29:R28) = 10-ms ticks since last count
-; R16, R17, R18   = scratch (not aliased, used for different things)
+; R16, R17, R18   = scratch (only aliased locally inside subroutines)
 
 ; SRAM VARIABLES
 .dseg
@@ -264,41 +264,48 @@ show_out:
     ret
 
 delay_10ms:
+.def outer_cnt = R17
+.def inner_cnt = R18
 
-    push R17
-    push R18
+    push outer_cnt
+    push inner_cnt
 
-    ldi R17, 208
+    ldi outer_cnt, 208
 
 d10_outer:
-    ldi R18, 255
+    ldi inner_cnt, 255
 
 d10_inner:
 
-    dec R18
+    dec inner_cnt
     brne d10_inner
 
-    dec R17
+    dec outer_cnt
     brne d10_outer
 
-    pop R18
-    pop R17
+    pop inner_cnt
+    pop outer_cnt
     ret
+
+.undef outer_cnt
+.undef inner_cnt
 
 ; DISPLAY SUBROUTINE
 ;
 ; R16 = bit 7 is decimal point, bits 6-0 are segments
 
 display:
+.def pattern   = R16
+.def bits_left = R17
 
-    push R16
-    push R17
+    push pattern
+    push bits_left
 
-    ldi R17, 8
+    ldi bits_left, 8
 
 rotate_loop:
 
-    lsl R16             ; shift MSB into carry
+    lsl pattern         ; shift MSB into carry
     brcs set_ser_in_1   ; 1 shifted out,
 
     cbi PORTB, 0        ; SER = 0
@@ -312,23 +319,33 @@ shift_clock:
     sbi PORTB, 1        ; pulse shift clock
     cbi PORTB, 1
 
-    dec R17
-    brne rotate_loop ; if R17 doesn't go to 0 (all nums shifted not in), jump back up.
+    dec bits_left
+    brne rotate_loop ; if bits_left doesn't go to 0 (all nums shifted not in), jump back up.
 
     sbi PORTB, 2        ; pulse latch clock
     cbi PORTB, 2
 
-    pop R17
-    pop R16
+    pop bits_left
+    pop pattern
     ret
 
+.undef pattern
+.undef bits_left
+
 ; HEX TO 7-SEGMENT LOOKUP
-; Input:  R16 = 0-F
-; Output: R16 = segment pattern
+; Input:  R16 = digit to display (0-F)
+; Output: R16 = segment pattern for that digit
+;
+; The patterns are stored in the 16-byte SRAM table "lut", one per digit,
+; so the pattern for digit d is at address lut + d. That address is 16
+; bits (XH:XL), so it's added in two 8-bit steps: the digit is added to
+; the low byte, then any carry is added to the high byte. There is no
+; add-immediate-with-carry instruction, so a register holding 0 is used.
 
 hex_to_seg:
+.def zero = R18
 
-    push R18
+    push zero
     push XL
     push XH
 
@@ -337,15 +354,17 @@ hex_to_seg:
     ldi XL, low(lut)
     ldi XH, high(lut)
 
-    clr R18
-    add XL, R16
-    adc XH, R18
+    clr zero
+    add XL, R16         ; low byte += digit
+    adc XH, zero        ; high byte += carry
 
-    ld R16, X
+    ld R16, X           ; R16 = lut[digit]
 
     pop XH
     pop XL
-    pop R18
+    pop zero
     ret
+
+.undef zero
 
 .exit
