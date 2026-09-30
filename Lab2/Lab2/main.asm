@@ -9,13 +9,14 @@
 
 
 ; REGISTER USAGE
-; R20     = counter value (0-F)
-; R21     = mode (0 = 1-second, 1 = 10-second)
-; R22     = how many ticks Button B has been held
-; R23     = Button A state on the previous pass
-; R24     = overflow flag (1 = counted past F, showing "-")
-; R25     = stopped flag (1 = stopped, 0 = counting)
-; R29:R28 = 10-ms ticks since last count
+.def counter    = R20   ; counter value (0-F)
+.def mode       = R21   ; 0 = 1-second, 1 = 10-second
+.def b_ticks    = R22   ; how many ticks Button B has been held
+.def a_prev     = R23   ; Button A state on the previous pass
+.def overflowed = R24   ; 1 = counted past F, showing "-"
+.def stopped    = R25   ; 1 = stopped, 0 = counting
+; YH:YL (R29:R28) = 10-ms ticks since last count
+; R16, R17, R18   = scratch (not aliased, used for different things)
 
 ; SRAM VARIABLES
 .dseg
@@ -88,14 +89,14 @@ RESET:
 
     ; Initial state: showing 0, stopped, waiting for Button A
 
-    clr R20             ; counter = 0
-    clr R21             ; 1-second mode
-    clr R22             ; Button B not held
-    ldi R23, (1<<3)     ; Button A released
-    clr R24             ; no overflow
-    ldi R25, 1          ; stopped
-    clr R28             ; tick count = 0
-    clr R29
+    clr counter         ; counter = 0
+    clr mode            ; 1-second mode
+    clr b_ticks         ; Button B not held
+    ldi a_prev, (1<<3)  ; Button A released
+    clr overflowed      ; no overflow
+    ldi stopped, 1      ; stopped
+    clr YL              ; tick count = 0
+    clr YH
 
     rcall show
 
@@ -108,18 +109,18 @@ main_loop:
     in R16, PIND
     andi R16, (1<<3)    ; 0 = pressed, (1<<3) = released
 
-    cp R16, R23
+    cp R16, a_prev
     breq btn_a_done     ; no change since last pass
 
-    mov R23, R16
+    mov a_prev, R16
     tst R16
     brne btn_a_done     ; just released, ignore
 
-    tst R24
+    tst overflowed
     brne btn_a_done     ; overflowed: A does nothing until cleared
 
     ldi R16, 1
-    eor R25, R16        ; just pressed: toggle start/stop
+    eor stopped, R16    ; just pressed: toggle start/stop
 
 btn_a_done:
 
@@ -129,47 +130,47 @@ btn_a_done:
     rjmp btn_b_released
 
     ; Pressed: count ticks, capped at 255 so it can't wrap
-    cpi R22, 255
+    cpi b_ticks, 255
     breq btn_b_done
-    inc R22
+    inc b_ticks
     rjmp btn_b_done
 
 btn_b_released:
 
-    tst R22
+    tst b_ticks
     breq btn_b_done     ; wasn't pressed
 
-    cpi R22, SHORT_MAX_TICKS
+    cpi b_ticks, SHORT_MAX_TICKS
     brlo b_short        ; < 1 s
 
-    cpi R22, BUTTON_MIN_TICKS
+    cpi b_ticks, BUTTON_MIN_TICKS
     brlo clear_hold     ; exactly 1 s: ignore
 
-    cpi R22, BUTTON_MAX_TICKS
+    cpi b_ticks, BUTTON_MAX_TICKS
     brlo b_mode         ; > 1 s and < 2 s
 
-    cpi R22, LONG_MIN_TICKS
+    cpi b_ticks, LONG_MIN_TICKS
     brlo clear_hold     ; exactly 2 s: ignore
 
     ; > 2 s: clear overflow back to 0, stopped
-    tst R24
+    tst overflowed
     breq clear_hold
-    clr R24
+    clr overflowed
     rjmp reset_to_zero
 
 b_short:
 
     ; < 1 s: reset to 0, only while stopped (and not overflowed)
-    tst R25
+    tst stopped
     breq clear_hold
-    tst R24
+    tst overflowed
     brne clear_hold
 
 reset_to_zero:
 
-    clr R20
-    clr R28
-    clr R29
+    clr counter
+    clr YL
+    clr YH
     rcall show
     rjmp clear_hold
 
@@ -177,19 +178,19 @@ b_mode:
 
     ; > 1 s and < 2 s: toggle 1 s / 10 s mode
     ldi R16, 1
-    eor R21, R16
+    eor mode, R16
 
-    clr R28             ; start a fresh interval in the new mode
-    clr R29
+    clr YL              ; start a fresh interval in the new mode
+    clr YH
 
     rcall show          ; update decimal point right away
 
 clear_hold:
-    clr R22
+    clr b_ticks
 
 btn_b_done:
 
-    tst R25
+    tst stopped
     breq counting    ; Stopped: skip counting
     rjmp main_loop
 
@@ -197,50 +198,50 @@ counting:
 
     ; Check to see if 1 or 10 sec has passed
 
-    adiw R28, 1
+    adiw YL, 1
 
-    tst R21
+    tst mode
     brne check_10s
 
-    cpi R28, low(100)
+    cpi YL, low(100)
     ldi R16, high(100)
-    cpc R29, R16
+    cpc YH, R16
     brsh count_up
     rjmp main_loop
 
 check_10s:
 
-    cpi R28, low(1000)
+    cpi YL, low(1000)
     ldi R16, high(1000)
-    cpc R29, R16
+    cpc YH, R16
     brsh count_up
     rjmp main_loop
 
 count_up:
 
-    clr R28
-    clr R29
+    clr YL
+    clr YH
 
-    cpi R20, 0x0F
+    cpi counter, 0x0F
     breq overflow       ; incrementing past F
 
-    inc R20
+    inc counter
     rcall show
     rjmp main_loop
 
 overflow:
 
-    ldi R24, 1          ; show "-"
-    ldi R25, 1          ; stop
+    ldi overflowed, 1   ; show "-"
+    ldi stopped, 1      ; stop
     rcall show
     rjmp main_loop
 
 
-; Displays counter R20, or "-" after overflow.
+; Displays counter, or "-" after overflow.
 ; Decimal point ON in 10-second mode.
 show:
 
-    tst R24        ; Check overflow
+    tst overflowed ; Check overflow
     breq show_digit
 
     ldi R16, SEG_DASH
@@ -248,12 +249,12 @@ show:
 
 show_digit:
 
-    mov R16, R20
+    mov R16, counter
     rcall hex_to_seg
 
 show_dp:
 
-    tst R21
+    tst mode
     breq show_out
     ori R16, 0x80       ; decimal point on
 
@@ -298,7 +299,7 @@ display:
 rotate_loop:
 
     lsl R16             ; shift MSB into carry
-    brcs set_ser_in_1   ; 1 shifted out, 
+    brcs set_ser_in_1   ; 1 shifted out,
 
     cbi PORTB, 0        ; SER = 0
     rjmp shift_clock
@@ -328,22 +329,22 @@ shift_clock:
 hex_to_seg:
 
     push R18
-    push R26
-    push R27
+    push XL
+    push XH
 
     andi R16, 0x0F
 
-    ldi R26, low(lut)
-    ldi R27, high(lut)
+    ldi XL, low(lut)
+    ldi XH, high(lut)
 
     clr R18
-    add R26, R16
-    adc R27, R18
+    add XL, R16
+    adc XH, R18
 
     ld R16, X
 
-    pop R27
-    pop R26
+    pop XH
+    pop XL
     pop R18
     ret
 
