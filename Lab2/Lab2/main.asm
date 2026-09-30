@@ -17,14 +17,11 @@
 ; R25     = stopped flag (1 = stopped, 0 = counting)
 ; R29:R28 = 10-ms ticks since last count
 
-
 ; SRAM VARIABLES
-
 .dseg
 .org 0x0100
 
 lut:            .byte 16      ; 7-segment lookup table
-
 
 .cseg
 
@@ -32,9 +29,6 @@ lut:            .byte 16      ; 7-segment lookup table
     jmp RESET
 
 .org INT_VECTORS_SIZE
-
-
-; RESET / INITIALIZATION
 
 RESET:
 
@@ -79,13 +73,11 @@ RESET:
     ldi R16, 0x71       ; F
     sts lut+15, R16
 
-
     ; Shift register outputs
 
     sbi DDRB, 0         ; PB0 = SER     (Arduino pin 8)
     sbi DDRB, 1         ; PB1 = SRCLK   (Arduino pin 9)
     sbi DDRB, 2         ; PB2 = RCLK    (Arduino pin 10)
-
 
     ; Button inputs (released = HIGH, pressed = LOW)
 
@@ -93,7 +85,6 @@ RESET:
     cbi DDRD, 3         ; PD3 = Button A (start / stop)
     sbi PORTD, 2
     sbi PORTD, 3
-
 
     ; Initial state: showing 0, stopped, waiting for Button A
 
