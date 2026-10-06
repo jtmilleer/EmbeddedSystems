@@ -1,6 +1,6 @@
 .include "m328Pdef.inc"
 
-.equ SEG_DASH = 0x40
+.equ SEG_DASH = 0x20
 
 ; PORT B PINS
 .equ RPG_A    = 0      ; PB0 (Arduino pin 8)
@@ -43,13 +43,13 @@ RESET:
 
     ; 7-segment lookup table
 
-    ldi R16, 0x3F       ; 0
+    ldi R16, 0x5F       ; 0
     sts lut, R16
     ldi R16, 0x06       ; 1
     sts lut+1, R16
-    ldi R16, 0x5B       ; 2
+    ldi R16, 0x3B       ; 2
     sts lut+2, R16
-    ldi R16, 0x4F       ; 3
+    ldi R16, 0x2F       ; 3
     sts lut+3, R16
     ldi R16, 0x66       ; 4
     sts lut+4, R16
