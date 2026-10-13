@@ -24,6 +24,7 @@
 .def overflowed = R23   ; 1 = counted past 60, showing "--"
 .def selected   = R24   ; 1 = number selected, LED on, RPG ignored
 .def held       = R25   ; Timer0 ticks the button has been down (stops at 1 s)
+.def sec_ticks  = R19   ; Timer0 ticks since the last countdown step
 ; R16, R17, R18   = scratch (only aliased locally inside subroutines)
 
 
@@ -111,13 +112,14 @@ RESET:
 
 main_loop:
 
-    ; Timer0 tick (every 4 ms): check the button
+    ; Timer0 tick (every 4 ms): check the button, run the countdown
 
     sbis TIFR0, OCF0A
     rjmp check_rpg      ; no tick yet
 
     sbi TIFR0, OCF0A    ; clear the flag (write 1 to clear)
     rcall check_button
+    rcall countdown_tick
 
 check_rpg:
 
@@ -229,16 +231,66 @@ btn_up:
 
 btn_short:
 
+    tst selected
+    brne btn_clear      ; already counting down, ignore
+
     tst overflowed
     brne btn_clear      ; "--" isn't a number, ignore
 
     ldi selected, 1
+    clr sec_ticks       ; first step 1 s from now
     sbi PORTB, LED      ; LED on
 
 btn_clear:
     clr held
 
 btn_ret:
+    ret
+
+
+; COUNTDOWN TICK
+;
+; Called once per Timer0 tick. While a number is selected, counts down
+; one every second. Reaching 00 turns the LED off; one second after that
+; everything goes back to the start ("--").
+
+countdown_tick:
+
+    tst selected
+    breq cd_ret         ; nothing selected, not counting
+
+    inc sec_ticks
+    cpi sec_ticks, TICKS_1S
+    brlo cd_ret         ; not a full second yet
+    clr sec_ticks
+
+    mov R16, ones
+    or R16, tens
+    brne cd_dec         ; not at 00 yet
+
+    rcall reset_state   ; 1 s at 00: back to "--"
+    ret
+
+cd_dec:
+    tst ones
+    brne cd_ones
+
+    ldi ones, 9         ; 0 borrows from the tens
+    dec tens
+    rjmp cd_show
+
+cd_ones:
+    dec ones
+
+cd_show:
+    rcall show
+
+    mov R16, ones
+    or R16, tens
+    brne cd_ret
+    cbi PORTB, LED      ; reached 00: LED off
+
+cd_ret:
     ret
 
 
