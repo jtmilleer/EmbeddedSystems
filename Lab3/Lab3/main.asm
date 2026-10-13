@@ -8,8 +8,13 @@
 .equ SR_SER   = 2      ; PB2 (Arduino pin 10)
 .equ SR_SRCLK = 3      ; PB3 (Arduino pin 11)
 .equ SR_RCLK  = 4      ; PB4 (Arduino pin 12)
+.equ LED      = 5      ; PB5 (Arduino pin 13, also the on-board LED)
+
+; PORT D PINS
+.equ BUTTON   = 2      ; PD2 (Arduino pin 2), active low
 
 .equ RPG_DETENT = (1<<RPG_A) | (1<<RPG_B)   ; A and B both high = resting in a click
+.equ TICKS_1S   = 250  ; Timer0 ticks (4 ms each) in 1 s
 
 
 ; REGISTER USAGE
@@ -17,6 +22,8 @@
 .def ones       = R21   ; ones digit of the count (0-9)
 .def tens       = R22   ; tens digit of the count (0-6)
 .def overflowed = R23   ; 1 = counted past 60, showing "--"
+.def selected   = R24   ; 1 = number selected, LED on, RPG ignored
+.def held       = R25   ; Timer0 ticks the button has been down (stops at 1 s)
 ; R16, R17, R18   = scratch (only aliased locally inside subroutines)
 
 
@@ -75,18 +82,47 @@ RESET:
     sbi DDRB, SR_SRCLK
     sbi DDRB, SR_RCLK
 
+    ; LED output, starts off
+
+    sbi DDRB, LED
+    cbi PORTB, LED
+
+    ; Button input (external 10k pull-up on the board, pressed = low)
+
+    cbi DDRD, BUTTON
+
+    ; Timer0: CTC mode, 16 MHz / 256 = 62.5 kHz, 250 counts = 4 ms per tick.
+    ; Not using interrupts, main_loop polls the OCF0A flag instead.
+
+    ldi R16, (1<<WGM01)             ; CTC, clears at OCR0A
+    out TCCR0A, R16
+    ldi R16, TICKS_1S - 1           ; count 0-249
+    out OCR0A, R16
+    ldi R16, (1<<CS02)              ; prescaler 256, starts the timer
+    out TCCR0B, R16
+
     ; Initial state
 
     rcall read_rpg
     mov rpg_prev, R16   ; start from wherever the knob is resting
 
-    clr ones            ; count = 00
-    clr tens
-    clr overflowed
-
-    rcall show
+    clr held
+    rcall reset_state   ; "--", LED off
 
 main_loop:
+
+    ; Timer0 tick (every 4 ms): check the button
+
+    sbis TIFR0, OCF0A
+    rjmp check_rpg      ; no tick yet
+
+    sbi TIFR0, OCF0A    ; clear the flag (write 1 to clear)
+    rcall check_button
+
+check_rpg:
+
+    tst selected
+    brne main_loop      ; number selected, RPG disabled
 
     ; RPG: compare current state to previous to find the direction
 
@@ -160,6 +196,65 @@ rpg_show:
 
 rpg_done:
     rjmp main_loop
+
+
+; CHECK BUTTON
+;
+; Called once per Timer0 tick. While the button is down, counts how long
+; it's been held. Acts when it's released:
+;   under 1 s = select: LED on, RPG disabled ("--" can't be selected)
+;   1 s or more = reset everything back to the start
+; Debouncing is done in hardware.
+
+check_button:
+
+    sbic PIND, BUTTON
+    rjmp btn_up         ; not pressed (high)
+
+    cpi held, TICKS_1S
+    brsh btn_ret        ; already a long press, stop counting
+    inc held
+    ret
+
+btn_up:
+
+    tst held
+    breq btn_ret        ; wasn't pressed, nothing to do
+
+    cpi held, TICKS_1S
+    brlo btn_short
+
+    rcall reset_state   ; long press: back to the start
+    rjmp btn_clear
+
+btn_short:
+
+    tst overflowed
+    brne btn_clear      ; "--" isn't a number, ignore
+
+    ldi selected, 1
+    sbi PORTB, LED      ; LED on
+
+btn_clear:
+    clr held
+
+btn_ret:
+    ret
+
+
+; Puts everything back to the start: "--", LED off, RPG enabled.
+; tens/ones hold 60 like a normal overflow, so CCW goes to 60.
+reset_state:
+
+    ldi overflowed, 1
+    ldi tens, 6
+    clr ones
+
+    clr selected
+    cbi PORTB, LED      ; LED off
+
+    rcall show
+    ret
 
 
 ; Displays the count on both digits, or "--" after overflow.
