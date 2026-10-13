@@ -28,12 +28,6 @@
 ; R16, R17, R18   = scratch (only aliased locally inside subroutines)
 
 
-; SRAM VARIABLES
-.dseg
-.org 0x0100
-
-lut:            .byte 10      ; 7-segment lookup table (digits 0-9)
-
 .cseg
 
 .org 0x0000
@@ -41,36 +35,22 @@ lut:            .byte 10      ; 7-segment lookup table (digits 0-9)
 
 .org INT_VECTORS_SIZE
 
+; 7-segment lookup table in program memory (digits 0-9)
+; .db packs two bytes per 16-bit flash word, so 10 bytes fill 5 words.
+
+lut:
+    .db 0x5F, 0x06      ; 0, 1
+    .db 0x3B, 0x2F      ; 2, 3
+    .db 0x66, 0x6D      ; 4, 5
+    .db 0x7D, 0x07      ; 6, 7
+    .db 0x7F, 0x6F      ; 8, 9
+
 RESET:
 
     ldi R16, high(RAMEND)
     out SPH, R16
     ldi R16, low(RAMEND)
     out SPL, R16
-
-
-    ; 7-segment lookup table
-
-    ldi R16, 0x5F       ; 0
-    sts lut, R16
-    ldi R16, 0x06       ; 1
-    sts lut+1, R16
-    ldi R16, 0x3B       ; 2
-    sts lut+2, R16
-    ldi R16, 0x2F       ; 3
-    sts lut+3, R16
-    ldi R16, 0x66       ; 4
-    sts lut+4, R16
-    ldi R16, 0x6D       ; 5
-    sts lut+5, R16
-    ldi R16, 0x7D       ; 6
-    sts lut+6, R16
-    ldi R16, 0x07       ; 7
-    sts lut+7, R16
-    ldi R16, 0x7F       ; 8
-    sts lut+8, R16
-    ldi R16, 0x6F       ; 9
-    sts lut+9, R16
 
     ; RPG inputs (external 10k pull-ups on the board)
 
@@ -415,28 +395,29 @@ read_rpg:
 ; Input:  R16 = digit to display (0-9)
 ; Output: R16 = segment pattern for that digit
 ;
-; Used once for the ones digit and once for the tens digit. The pattern
-; for digit d is at address lut + d. That address is 16 bits (XH:XL), so
-; the digit is added to the low byte, then any carry to the high byte.
+; Used once for the ones digit and once for the tens digit. The table is
+; in flash, which LPM reads by byte address through Z. Labels are word
+; addresses, so lut is doubled (lut*2) to get its byte address. The digit
+; is added to the low byte, then any carry to the high byte.
 
 digit_to_seg:
 .def zero = R18
 
     push zero
-    push XL
-    push XH
+    push ZL
+    push ZH
 
-    ldi XL, low(lut)
-    ldi XH, high(lut)
+    ldi ZL, low(lut*2)
+    ldi ZH, high(lut*2)
 
     clr zero
-    add XL, R16         ; low byte += digit
-    adc XH, zero        ; high byte += carry
+    add ZL, R16         ; low byte += digit
+    adc ZH, zero        ; high byte += carry
 
-    ld R16, X           ; R16 = lut[digit]
+    lpm R16, Z          ; R16 = lut[digit]
 
-    pop XH
-    pop XL
+    pop ZH
+    pop ZL
     pop zero
     ret
 
