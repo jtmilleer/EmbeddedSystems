@@ -21,7 +21,7 @@
 .def rpg_prev   = R20   ; RPG A/B on the previous read (same bits as PINB)
 .def ones       = R21   ; ones digit of the count (0-9)
 .def tens       = R22   ; tens digit of the count (0-6)
-.def overflowed = R23   ; 1 = counted past 60, showing "--"
+.def dashes     = R23   ; 1 = showing "--" (below 00, nothing entered)
 .def selected   = R24   ; 1 = number selected, LED on, RPG ignored
 .def held       = R25   ; Timer0 ticks the button has been down (stops at 1 s)
 .def sec_ticks  = R19   ; Timer0 ticks since the last countdown step
@@ -151,16 +151,19 @@ check_rpg:
 
 rpg_cw:
 
-    ; Clockwise: count up, past 60 shows "--"
+    ; Clockwise: count up, "--" -> 01 -> ... -> 60, stop at 60
 
-    tst overflowed
-    brne rpg_done       ; already "--", stay there
+    tst dashes
+    breq cw_check_60
 
-    cpi tens, 6
-    brne cw_inc         ; tens = 6 only at 60
-
-    ldi overflowed, 1   ; 60 -> "--"
+    clr dashes          ; "--" -> 01
+    clr tens
+    ldi ones, 1
     rjmp rpg_show
+
+cw_check_60:
+    cpi tens, 6
+    breq rpg_done       ; tens = 6 only at 60, stay there
 
 cw_inc:
     inc ones
@@ -172,20 +175,21 @@ cw_inc:
 
 rpg_ccw:
 
-    ; Counter-clockwise: count down, stop at 00
+    ; Counter-clockwise: count down, 60 -> ... -> 00 -> "--", stop at "--"
 
-    tst overflowed
-    breq ccw_dec
-    clr overflowed      ; "--" -> 60 (ones/tens still hold 60)
-    rjmp rpg_show
+    tst dashes
+    brne rpg_done       ; already "--", stay there
 
-ccw_dec:
     tst ones
     brne ccw_ones
 
     tst tens
-    breq rpg_done       ; already 00, stay there
+    brne ccw_borrow
 
+    ldi dashes, 1       ; 00 -> "--"
+    rjmp rpg_show
+
+ccw_borrow:
     ldi ones, 9         ; 0 borrows from the tens
     dec tens
     rjmp rpg_show
@@ -234,7 +238,7 @@ btn_short:
     tst selected
     brne btn_clear      ; already counting down, ignore
 
-    tst overflowed
+    tst dashes
     brne btn_clear      ; "--" isn't a number, ignore
 
     ldi selected, 1
@@ -295,11 +299,10 @@ cd_ret:
 
 
 ; Puts everything back to the start: "--", LED off, RPG enabled.
-; tens/ones hold 60 like a normal overflow, so CCW goes to 60.
 reset_state:
 
-    ldi overflowed, 1
-    ldi tens, 6
+    ldi dashes, 1
+    clr tens
     clr ones
 
     clr selected
@@ -309,10 +312,10 @@ reset_state:
     ret
 
 
-; Displays the count on both digits, or "--" after overflow.
+; Displays the count on both digits, or "--".
 show:
 
-    tst overflowed
+    tst dashes
     breq show_digits
 
     ldi R16, SEG_DASH
