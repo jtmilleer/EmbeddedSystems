@@ -52,7 +52,7 @@ RESET:
     ldi R16, low(RAMEND)
     out SPL, R16
 
-    ; RPG inputs (external 10k pull-ups on the board)
+    ; RPG inputs
 
     cbi DDRB, RPG_A
     cbi DDRB, RPG_B
@@ -68,13 +68,12 @@ RESET:
     sbi DDRB, LED
     cbi PORTB, LED
 
-    ; Button input (external 10k pull-up on the board, pressed = low)
+    ; Button input 
 
     cbi DDRD, BUTTON
 
-    ; Timer0: CTC mode, 16 MHz / 256 = 62.5 kHz, 250 counts = 4 ms per tick.
-    ; Not using interrupts, main_loop polls the OCF0A flag instead.
-
+    ; Timer0: CTC mode, 16 MHz / 256 = 62.5 kHz per count, 250 counts = 4 ms per tick.
+    ; main_loop polls the OCF0A, set when the count reaches 249.
     ldi R16, (1<<WGM01)             ; CTC, clears at OCR0A
     out TCCR0A, R16
     ldi R16, TICKS_1S - 1           ; count 0-249
@@ -84,7 +83,7 @@ RESET:
 
     ; Initial state
 
-    rcall read_rpg
+    rcall read_rpg      ; state stored in R16
     mov rpg_prev, R16   ; start from wherever the knob is resting
 
     clr held
@@ -94,7 +93,7 @@ main_loop:
 
     ; Timer0 tick (every 4 ms): check the button, run the countdown
 
-    sbis TIFR0, OCF0A
+    sbis TIFR0, OCF0A   ; if timer has reached 249, OCF0A will be set. 
     rjmp check_rpg      ; no tick yet
 
     sbi TIFR0, OCF0A    ; clear the flag (write 1 to clear)
@@ -103,7 +102,7 @@ main_loop:
 
 check_rpg:
 
-    tst selected
+    tst selected 
     brne main_loop      ; number selected, RPG disabled
 
     ; RPG: compare current state to previous to find the direction
@@ -112,11 +111,9 @@ check_rpg:
     cp R16, rpg_prev
     breq main_loop      ; no change, knob hasn't moved
 
-    mov R17, rpg_prev   ; R17 = previous state, for the direction check
+    mov R17, rpg_prev   ; R17 = previous state
     mov rpg_prev, R16   ; save current as the new previous
 
-    ; One click = 11 -> ... -> 11. Only count when the knob lands back in
-    ; the detent; the state it came from tells which way it turned.
 
     cpi R16, RPG_DETENT
     brne main_loop      ; still between clicks
@@ -131,7 +128,7 @@ check_rpg:
 
 rpg_cw:
 
-    ; Clockwise: count up, "--" -> 01 -> ... -> 60, stop at 60
+    ; Clockwise: count up, stop at 60
 
     tst dashes
     breq cw_check_60
@@ -147,7 +144,7 @@ cw_check_60:
 
 cw_inc:
     inc ones
-    cpi ones, 10
+    cpi ones, 10        ; check if 1's spot overflowed
     brne rpg_show
     clr ones            ; 9 rolls over to the next ten
     inc tens
@@ -155,7 +152,7 @@ cw_inc:
 
 rpg_ccw:
 
-    ; Counter-clockwise: count down, 60 -> ... -> 00 -> "--", stop at "--"
+    ; Counter-clockwise: count down,stop at "--"
 
     tst dashes
     brne rpg_done       ; already "--", stay there
