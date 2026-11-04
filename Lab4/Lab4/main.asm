@@ -15,6 +15,7 @@
 ; PORT D PINS
 .equ BUTTON   = 2      ; PD2 (Arduino pin 2), INT0, active low
 .equ FAN_PWM  = 5      ; PD5 (Arduino pin 5), OC0B
+.equ TACH_IN  = 3      ; PD3 (Arduino pin 3), INT1, open collector
 
 .equ LCD_DATA = (1<<LCD_D4) | (1<<LCD_D5) | (1<<LCD_D6) | (1<<LCD_D7)
 .equ RPG_DETENT = (1<<RPG_A) | (1<<RPG_B)   ; A and B both high = resting in a click
@@ -53,12 +54,22 @@
 .equ WAIT_1MS    = 10  ; 1 ms per release check
 .equ RELEASE_MS  = 20  ; button must read high this long before INT0 is re-armed
 
+; Fan status values
+.equ STATUS_OFF     = 0
+.equ STATUS_STOPPED = 1
+.equ STATUS_LOW     = 2
+.equ STATUS_OK      = 3
+
 
 ; REGISTER USAGE
 .def duty       = R19   ; OCR0B value, DUTY_MIN-DUTY_MAX
 .def rpg_prev   = R20   ; RPG A/B on the previous read (same bits as PINB)
 .def fan_on     = R21   ; 1 = fan running, RPG enabled
 .def lcd_update = R22   ; 1 = an ISR changed the DC or status, main loop redraws
+.def tach_count = R23   ; number of tach pulses since the last Timer1 compare match
+.def tach_sample = R24   ; Completed 500 ms pulse count
+.def tach_ready  = R25   ; 1 = new RPM measurement available
+.def fan_status = R26    ; 0 = off, 1 = stopped, 2 = low, 3 = ok
 ; R16, R17        = scratch (only aliased locally inside subroutines)
 
 
@@ -73,6 +84,12 @@
 .org PCI0addr
     rjmp rpg_isr
 
+.org OC1Aaddr
+    rjmp timer1_isr
+
+.org INT1addr
+    rjmp tach_isr
+
 .org INT_VECTORS_SIZE
 
 ; LCD strings in program memory, null terminated and padded to an even length
@@ -85,6 +102,15 @@ str_fan_on:
 
 str_fan_off:
     .db "Fan: OFF", 0, 0
+
+str_fan_stopped:
+    .db "Fan: stopped    ", 0, 0
+
+str_fan_low:
+    .db "Fan: low RPM    ", 0, 0
+
+str_fan_ok:
+    .db "Fan: RPM OK     ", 0, 0
 
 RESET:
 
@@ -112,6 +138,10 @@ RESET:
     cbi DDRB, RPG_B     ; PB1 (Arduino pin 9), RPG B
     cbi DDRD, BUTTON    ; PD2 (Arduino pin 2), pushbutton, active low
 
+    ;tachometer input
+    cbi DDRD, TACH_IN ; PD3 (Arduino pin 3), tachometer input
+
+
     ; Timer0: fast PWM with TOP = OCR0A (mode 7), no prescaler.
     ; 16 MHz / (PWM_TOP + 1) = 80 kHz. OC0B goes high at BOTTOM and low
     ; after the count passes OCR0B, so DC = (OCR0B + 1) / 200.
@@ -127,6 +157,27 @@ RESET:
     ldi R16, (1<<WGM02) | (1<<CS00)
     out TCCR0B, R16     ; prescaler 1, starts the PWM
 
+    ;Timer1
+    ldi R16, 0
+    sts TCCR1A, R16 ;Clear Timer1 control register A.
+    sts TCCR1B, R16 ;Clear Timer1 control register B.
+    ldi R16, HIGH(0x7A11)
+    sts OCR1AH, R16
+    ldi R16, LOW(0x7A11)
+    sts OCR1AL, R16
+    ldi R16, 0
+    sts TCNT1H, R16 ;Clear Timer1 counter register high byte.
+    sts TCNT1L, R16 ;Clear Timer1 counter register low byte.
+    ldi R16, (1<<OCF1A) ;Clear Timer1 compare match A flag.
+    out TIFR1, R16
+    ldi R16, (1<<OCIE1A) ;Enable Timer1 compare match A interrupt.
+    sts TIMSK1, R16
+    ldi R16, (1<<WGM12) | (1<<CS12) 
+    sts TCCR1B, R16 ;Set Timer1 to CTC mode with a prescaler of 256.
+    
+
+    ldi fan_status, STATUS_OFF ;Initialize fan status to off
+    
     ; LCD text
 
     rcall lcd_init
@@ -138,11 +189,11 @@ RESET:
     ; Interrupts: button on the falling edge of INT0 (press), RPG on any
     ; change of PB0 or PB1
 
-    ldi R16, (1<<ISC01)
+    ldi R16, (1<<ISC01) | (1<<ISC10) | (1<<ISC11)  ; INT0 falling edge, INT1 rising edge
     sts EICRA, R16
-    ldi R16, (1<<INTF0)
+    ldi R16, (1<<INTF0) | (1<<INTF1)  ; clear any old edges (write 1 to clear)
     out EIFR, R16
-    ldi R16, (1<<INT0)
+    ldi R16, (1<<INT0) | (1<<INT1)  ; enable INT0 and INT1
     out EIMSK, R16
 
     ldi R16, (1<<PCINT0) | (1<<PCINT1)
@@ -154,10 +205,69 @@ RESET:
     ldi R16, (1<<PCIE0)
     sts PCICR, R16
 
+    clr tach_count ; Start with zero pulses
+    clr tach_ready ; Initialize ready flag
+    clr tach_sample ; Initialize sample value
+
+
     sei
 
 main_loop:
 
+     ; Check if a new tachometer measurement is available
+    tst tach_ready
+    breq ml_lcd
+
+    ; Safely retrieve the measurement
+    in R16, SREG
+    cli                     ; Temporarily disable interrupts
+
+    mov R17, tach_sample    ; Copy completed pulse count
+    clr tach_ready          ; Mark measurement as processed
+
+    out SREG, R16           ; Restore previous interrupt state
+
+      ; Determine fan status
+    ; R17 contains pulses measured during 500 ms
+    ; R18 will hold the new fan status
+
+    ldi R18, STATUS_OFF
+    tst fan_on
+    breq ml_status_compare  ; Fan intentionally off
+
+    tst R17
+    breq ml_stopped         ; Zero pulses = stopped
+
+    cpi R17, 44
+    brlo ml_low_rpm         ; Fewer than 44 pulses
+
+    ldi R18, STATUS_OK      ; 44 or more pulses
+    rjmp ml_status_compare
+
+ml_stopped:
+    ldi R18, STATUS_STOPPED
+    rjmp ml_status_compare
+
+ml_low_rpm:
+    ldi R18, STATUS_LOW
+
+
+ml_status_compare:
+
+    ; Only update the LCD if fan status changed
+    cp R18, fan_status
+    breq ml_lcd
+
+    mov fan_status, R18
+    ldi lcd_update, 1
+
+    rjmp ml_lcd
+
+
+ml_no_sample:
+    out SREG, R16           ; Restore interrupts before continuing
+    
+ml_lcd:
     ; The ISRs do the work. The LCD is only touched here, since its waits
     ; are too slow for an ISR.
 
@@ -201,6 +311,13 @@ button_isr:
 
 btn_set:
     out TCCR0A, R16
+
+    ; Reset old RPM status when turning the fan back on
+    tst fan_on
+    breq btn_update_lcd
+    ldi fan_status, STATUS_OFF
+
+btn_update_lcd:
     ldi lcd_update, 1
 
     pop R16
@@ -294,6 +411,53 @@ rpg_ret:
     pop R16
     reti
 
+; TIMER1 ISR (Compare Match A)
+; Executes every 500 ms.
+; Saves tachometer pulse count and resets for next interval.
+
+timer1_isr:
+
+    push R16
+    in R16, SREG
+    push R16
+
+    ; Save completed pulse count
+    mov tach_sample, tach_count
+
+    ; Reset counter for next 500 ms
+    clr tach_count
+
+    ; Notify main loop that new measurement is available
+    ldi tach_ready, 1
+
+    pop R16
+    out SREG, R16
+    pop R16
+    reti
+
+
+
+; TACHOMETER ISR (INT1, rising edge)
+; Counts tachometer pulses, saturating at 44.
+; 44 pulses per 500 ms corresponds to 2640 RPM.
+
+tach_isr:
+
+    push R16
+    in R16, SREG
+    push R16
+
+    cpi tach_count, 44
+    brsh tach_ret          ; Don't count above 44
+
+    inc tach_count         ; Increment pulse count
+
+tach_ret:
+    pop R16
+    out SREG, R16
+    pop R16
+    reti
+
 
 ; SHOW DUTY CYCLE
 ; Input: duty = OCR0B value
@@ -379,22 +543,58 @@ sd_ones:
 .undef tenths
 
 
-; Writes "Fan: ON " or "Fan: OFF" on line 2.
+
+; SHOW FAN STATUS
+; Displays the current operating condition on LCD line 2.
+
 show_status:
 
     push R16
     push ZL
     push ZH
 
+    ; Move cursor to beginning of second line
     ldi R16, LCD_LINE2
     rcall lcd_cmd
 
+    ; Fan OFF always takes priority
+    tst fan_on
+    breq ss_off
+
+    ; Check measured operating status
+    cpi fan_status, STATUS_STOPPED
+    breq ss_stopped
+
+    cpi fan_status, STATUS_LOW
+    breq ss_low
+
+    cpi fan_status, STATUS_OK
+    breq ss_ok
+
+    ; Waiting for first RPM measurement
     ldi ZL, low(str_fan_on*2)
     ldi ZH, high(str_fan_on*2)
-    tst fan_on
-    brne ss_print       ; fan on
+    rjmp ss_print
+
+ss_off:
     ldi ZL, low(str_fan_off*2)
     ldi ZH, high(str_fan_off*2)
+    rjmp ss_print
+
+ss_stopped:
+    ldi ZL, low(str_fan_stopped*2)
+    ldi ZH, high(str_fan_stopped*2)
+    rjmp ss_print
+
+ss_low:
+    ldi ZL, low(str_fan_low*2)
+    ldi ZH, high(str_fan_low*2)
+    rjmp ss_print
+
+ss_ok:
+    ldi ZL, low(str_fan_ok*2)
+    ldi ZH, high(str_fan_ok*2)
+
 
 ss_print:
     rcall lcd_string
