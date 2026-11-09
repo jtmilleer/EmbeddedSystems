@@ -18,3 +18,9 @@
 *.cof
 *.eeprom
 *.srec
+
+# Schematic files
+*_schematic/
+*_schematic.zip
+
+*.pdf
