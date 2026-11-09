@@ -16,7 +16,7 @@
 .def overflowed = R24   ; 1 = counted past F, showing "-"
 .def stopped    = R25   ; 1 = stopped, 0 = counting
 ; YH:YL (R29:R28) = 10-ms ticks since last count
-; R16, R17, R18   = scratch (only aliased locally inside subroutines)
+; R16, R17, R18, R19   = scratch (only aliased locally inside subroutines)
 
 ; SRAM VARIABLES
 .dseg
@@ -269,11 +269,12 @@ delay_10ms:
 
     push outer_cnt
     push inner_cnt
+	push R19
 
-    ldi outer_cnt, 208
+    ldi outer_cnt, 209
 
 d10_outer:
-    ldi inner_cnt, 255
+    ldi inner_cnt, 254
 
 d10_inner:
 
@@ -283,8 +284,19 @@ d10_inner:
     dec outer_cnt
     brne d10_outer
 
+	; get to ~10ms
+	ldi R19, 16
+	nop
+	dec R19 
+	brne PC-2 ; go back two instructions, (nop). 
+	nop
+	nop
+
+	pop R19
     pop inner_cnt
     pop outer_cnt
+	
+
     ret
 
 .undef outer_cnt
