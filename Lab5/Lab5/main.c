@@ -9,7 +9,8 @@
  *   S,c,v      set DAC channel c (0 or 1) to v volts, format "n.nn"
  *
  * Commands end with CR and/or LF (Serial Monitor line ending setting).
- * G reads the ADC on A0. M and S are still stubs.
+ * G reads the ADC on A0. S drives a MAX518 DAC over I2C (A4/A5). M is
+ * still a stub.
  *
  * Created: 11/9/2026 7:53:59 AM
  * Author : jtmil
@@ -24,7 +25,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#include "uart.h"   /* avr-uart by Andy Gock, based on Peter Fleury's library */
+#include "uart.h"       /* avr-uart by Andy Gock, based on Peter Fleury's library */
+#include "i2cmaster.h"  /* Peter Fleury's I2C master library (twimaster.c) */
 
 #define BAUD        9600
 
@@ -39,6 +41,16 @@
 
 #define VREF_MV     5000UL  /* AVcc reference, in millivolts */
 #define ADC_STEPS   1024UL  /* 10-bit ADC */
+
+/*
+ * MAX518 slave address is 0 1 0 1 1 AD1 AD0. AD1 and AD0 are tied to GND,
+ * so the 7-bit address is 0x2C. The I2C library takes it shifted left with
+ * the R/W bit in bit 0.
+ */
+#define MAX518_ADDR (0x2C << 1)
+#define DAC_STEPS   256UL   /* 8-bit DAC, VOUT = VDD * N / 256 */
+#define DAC_CODE_MAX 255
+#define DAC_VREF_CV 500UL   /* MAX518 reference is VDD (5.00 V), in centivolts */
 
 
 /* UART (the library's interrupt-driven ring buffers do the actual I/O) */
@@ -177,7 +189,38 @@ static uint16_t adc_to_mv(uint16_t raw)
 }
 
 
-/* Command handlers (M and S are stubs until the timing and DAC are done) */
+/* MAX518 DAC (over I2C, PC4/SDA = Arduino A4, PC5/SCL = Arduino A5) */
+
+/*
+ * Picks the DAC code with the smallest quantization error. VOUT = 5 V * N
+ * / 256, so N = v * 256 / 5 rounded to the nearest integer. 5.00 V would be
+ * N = 256, which doesn't fit, so it clamps to 255 (4.98 V).
+ */
+static uint8_t dac_code(uint16_t centivolts)
+{
+    uint32_t n = ((uint32_t)centivolts * DAC_STEPS + DAC_VREF_CV / 2) / DAC_VREF_CV;
+
+    if (n > DAC_CODE_MAX)
+        n = DAC_CODE_MAX;
+    return (uint8_t)n;
+}
+
+/*
+ * MAX518 write is: address byte, command byte, output byte. The command
+ * byte's bit 0 selects the channel; RST and PD stay 0 for normal output.
+ */
+static uint8_t dac_write(uint8_t channel, uint8_t code)
+{
+    uint8_t ok = !i2c_start(MAX518_ADDR | I2C_WRITE) &&
+                 !i2c_write(channel & 0x01) &&
+                 !i2c_write(code);
+
+    i2c_stop();
+    return ok;
+}
+
+
+/* Command handlers (M is a stub until the timing is done) */
 
 static void cmd_get(void)
 {
@@ -193,8 +236,18 @@ static void cmd_multi(uint8_t n, uint8_t dt)
 
 static void cmd_set(uint8_t channel, uint16_t centivolts)
 {
-    printf("S: DAC channel %u = %u.%02u V (DAC not implemented)\n",
-           channel, centivolts / 100, centivolts % 100);
+    uint8_t code = dac_code(centivolts);
+    /* actual output in mV, so the quantization error is visible */
+    uint16_t mv = (uint16_t)((code * DAC_VREF_CV * 10) / DAC_STEPS);
+
+    if (!dac_write(channel, code)) {
+        printf("Error: no response from DAC (check I2C wiring)\n");
+        return;
+    }
+
+    printf("DAC channel %u set to %u.%02u V (code %u, output %u.%03u V)\n",
+           channel, centivolts / 100, centivolts % 100,
+           code, mv / 1000, mv % 1000);
 }
 
 
@@ -255,6 +308,7 @@ int main(void)
     uart_init(UART_BAUD_SELECT(BAUD, F_CPU));   /* library sets 8N1 */
     stdout = &uart_out;
     adc_init();
+    i2c_init();     /* library sets 100 kHz SCL; needs 4.7k pull-ups on A4/A5 */
     sei();                                      /* library is interrupt driven */
 
     printf("Lab5 analog interface ready\n");
