@@ -9,8 +9,8 @@
  *   S,c,v      set DAC channel c (0 or 1) to v volts, format "n.nn"
  *
  * Commands end with CR and/or LF (Serial Monitor line ending setting).
- * G reads the ADC on A0. S drives a MAX518 DAC over I2C (A4/A5). M is
- * still a stub.
+ * G and M read the ADC on A0 (M timed by Timer1). S drives a MAX518 DAC
+ * over I2C (A4/A5).
  *
  * Created: 11/9/2026 7:53:59 AM
  * Author : jtmil
@@ -41,6 +41,8 @@
 
 #define VREF_MV     5000UL  /* AVcc reference, in millivolts */
 #define ADC_STEPS   1024UL  /* 10-bit ADC */
+
+#define TICKS_1S    15625U  /* Timer1 counts per second: 16 MHz / 1024 */
 
 /*
  * MAX518 slave address is 0 1 0 1 1 AD1 AD0. AD1 and AD0 are tied to GND,
@@ -220,7 +222,41 @@ static uint8_t dac_write(uint8_t channel, uint8_t code)
 }
 
 
-/* Command handlers (M is a stub until the timing is done) */
+/* Timer1 (1 s time base for M) */
+
+/*
+ * CTC mode, prescaler 1024: 16 MHz / 1024 = 15625 counts per second, so
+ * OCF1A sets once a second. TOP is 15624 because the count includes 0.
+ */
+static void timer1_init(void)
+{
+    TCCR1A = 0;
+    TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10);
+    OCR1A = TICKS_1S - 1;
+}
+
+/* Restarts the 1 s period from now. */
+static void timer1_restart(void)
+{
+    TCNT1 = 0;
+    TIFR1 = (1 << OCF1A);   /* writing 1 clears the flag */
+}
+
+/*
+ * Waits for the next s one-second ticks. TCNT1 keeps running between
+ * calls, so time spent printing doesn't push later samples back.
+ */
+static void wait_seconds(uint8_t s)
+{
+    while (s--) {
+        while (!(TIFR1 & (1 << OCF1A)))
+            ;
+        TIFR1 = (1 << OCF1A);
+    }
+}
+
+
+/* Command handlers */
 
 static void cmd_get(void)
 {
@@ -229,9 +265,23 @@ static void cmd_get(void)
     printf("v=%u.%03u V\n", mv / 1000, mv % 1000);
 }
 
+/* First sample is taken right away, then one every dt seconds. */
 static void cmd_multi(uint8_t n, uint8_t dt)
 {
-    printf("M: %u measurements, %u s apart (ADC not implemented)\n", n, dt);
+    uint8_t i;
+    uint16_t t = 0;
+
+    timer1_restart();
+    for (i = 0; i < n; i++) {
+        uint16_t mv;
+
+        if (i > 0) {
+            wait_seconds(dt);
+            t += dt;
+        }
+        mv = adc_to_mv(adc_read());
+        printf("t=%u s, v=%u.%03u V\n", t, mv / 1000, mv % 1000);
+    }
 }
 
 static void cmd_set(uint8_t channel, uint16_t centivolts)
@@ -308,6 +358,7 @@ int main(void)
     uart_init(UART_BAUD_SELECT(BAUD, F_CPU));   /* library sets 8N1 */
     stdout = &uart_out;
     adc_init();
+    timer1_init();
     i2c_init();     /* library sets 100 kHz SCL; needs 4.7k pull-ups on A4/A5 */
     sei();                                      /* library is interrupt driven */
 
