@@ -1,16 +1,13 @@
 /*
  * Lab5.c
  *
- * Remotely controlled ADC/DAC interface. This file currently implements
- * the RS232 command protocol only (9600 8N1):
+ * Remotely controlled analog interface over RS232 (9600 8N1):
  *
  *   G          single ADC measurement
  *   M,n,dt     n measurements (2-20), dt seconds apart (1-10)
  *   S,c,v      set DAC channel c (0 or 1) to v volts, format "n.nn"
  *
- * Commands end with CR and/or LF (Serial Monitor line ending setting).
- * G and M read the ADC on A0 (M timed by Timer1). S drives a MAX518 DAC
- * over I2C (A4/A5).
+ * The ADC reads A0. The MAX518 DAC is driven over I2C (A4/A5).
  *
  * Created: 11/9/2026 7:53:59 AM
  * Author : jtmil
@@ -37,27 +34,22 @@
 #define M_DT_MIN    1
 #define M_DT_MAX    10
 #define DAC_CH_MAX  1
-#define DAC_V_MAX   500     /* max output voltage in hundredths of a volt */
+#define DAC_V_MAX   500     /* hundredths of a volt */
 
-#define VREF_MV     5000UL  /* AVcc reference, in millivolts */
+#define VREF_MV     5000UL
 #define ADC_STEPS   1024UL  /* 10-bit ADC */
 
-#define TICKS_1S    15625U  /* Timer1 counts per second: 16 MHz / 1024 */
+#define TICKS_1S    15625U  /* 16 MHz / 1024 */
 
-/*
- * MAX518 slave address is 0 1 0 1 1 AD1 AD0. AD1 and AD0 are tied to GND,
- * so the 7-bit address is 0x2C. The I2C library takes it shifted left with
- * the R/W bit in bit 0.
- */
+/* MAX518 address is 0101 1 AD1 AD0 with AD1 = AD0 = GND */
 #define MAX518_ADDR (0x2C << 1)
-#define DAC_STEPS   256UL   /* 8-bit DAC, VOUT = VDD * N / 256 */
+#define DAC_STEPS   256UL   /* VOUT = 5 V * N / 256 */
 #define DAC_CODE_MAX 255
-#define DAC_VREF_CV 500UL   /* MAX518 reference is VDD (5.00 V), in centivolts */
+#define DAC_VREF_CV 500UL   /* 5.00 V in hundredths of a volt */
 
 
-/* UART (the library's interrupt-driven ring buffers do the actual I/O) */
+/* UART */
 
-/* Blocks until the library's receive buffer has a byte. */
 static char uart_getc_blocking(void)
 {
     uint16_t c;
@@ -69,6 +61,7 @@ static char uart_getc_blocking(void)
     return (char)c;
 }
 
+/* Sends CR before LF so lines start at the left edge of the terminal. */
 static int uart_stream_put(char c, FILE *stream)
 {
     (void)stream;
@@ -81,10 +74,9 @@ static int uart_stream_put(char c, FILE *stream)
 static FILE uart_out = FDEV_SETUP_STREAM(uart_stream_put, NULL, _FDEV_SETUP_WRITE);
 
 /*
- * Reads one line into buf, without the line ending. Blank lines are
- * skipped so a CR+LF ending doesn't produce an empty command. Characters
- * past the buffer size are dropped, and the line is flagged as too long.
- * Returns 1 if the line fit, 0 if it overflowed.
+ * Reads one line without its line ending. Blank lines are skipped so a
+ * CR+LF ending doesn't produce an empty command. Returns 0 if the line
+ * was too long for buf.
  */
 static uint8_t uart_getline(char *buf, uint8_t size)
 {
@@ -109,12 +101,8 @@ static uint8_t uart_getline(char *buf, uint8_t size)
 }
 
 
-/* Parsing helpers */
+/* Parsing */
 
-/*
- * Parses an unsigned decimal integer starting at *p and advances *p past
- * it. Returns 0 if there are no digits or the value doesn't fit in 16 bits.
- */
 static uint8_t parse_uint(const char **p, uint16_t *out)
 {
     const char *s = *p;
@@ -135,11 +123,7 @@ static uint8_t parse_uint(const char **p, uint16_t *out)
     return 1;
 }
 
-/*
- * Parses a voltage in the exact form "n.nn" and advances *p past it.
- * The result is in hundredths of a volt (e.g. "2.37" -> 237), which keeps
- * float math out of the parser.
- */
+/* Parses "n.nn" into hundredths of a volt ("2.37" -> 237) to avoid floats. */
 static uint8_t parse_voltage(const char **p, uint16_t *centivolts)
 {
     const char *s = *p;
@@ -165,9 +149,9 @@ static uint8_t expect_char(const char **p, char c)
 /* ADC */
 
 /*
- * AVcc reference, channel ADC0 (PC0, Arduino pin A0), right adjusted for
- * the full 10-bit result. Prescaler 128 gives a 125 kHz ADC clock, inside
- * the 50-200 kHz range needed for full 10-bit resolution.
+ * AVcc reference, channel ADC0, right adjusted (ADLAR = 0) for the full
+ * 10-bit result. Prescaler 128 gives a 125 kHz ADC clock, inside the
+ * 50-200 kHz range needed for 10-bit resolution.
  */
 static void adc_init(void)
 {
@@ -175,7 +159,6 @@ static void adc_init(void)
     ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
 }
 
-/* Starts one conversion and waits for it to finish. */
 static uint16_t adc_read(void)
 {
     ADCSRA |= (1 << ADSC);
@@ -184,19 +167,17 @@ static uint16_t adc_read(void)
     return ADC;
 }
 
-/* Converts a raw reading to millivolts: V = ADC * VREF / 1024. */
 static uint16_t adc_to_mv(uint16_t raw)
 {
     return (uint16_t)((raw * VREF_MV) / ADC_STEPS);
 }
 
 
-/* MAX518 DAC (over I2C, PC4/SDA = Arduino A4, PC5/SCL = Arduino A5) */
+/* MAX518 DAC */
 
 /*
- * Picks the DAC code with the smallest quantization error. VOUT = 5 V * N
- * / 256, so N = v * 256 / 5 rounded to the nearest integer. 5.00 V would be
- * N = 256, which doesn't fit, so it clamps to 255 (4.98 V).
+ * N = v * 256 / 5, rounded to the nearest integer for the smallest
+ * quantization error. 5.00 V would be 256, so it clamps to 255.
  */
 static uint8_t dac_code(uint16_t centivolts)
 {
@@ -207,10 +188,7 @@ static uint8_t dac_code(uint16_t centivolts)
     return (uint8_t)n;
 }
 
-/*
- * MAX518 write is: address byte, command byte, output byte. The command
- * byte's bit 0 selects the channel; RST and PD stay 0 for normal output.
- */
+/* Address byte, command byte (bit 0 = channel), output byte. */
 static uint8_t dac_write(uint8_t channel, uint8_t code)
 {
     uint8_t ok = !i2c_start(MAX518_ADDR | I2C_WRITE) &&
@@ -222,12 +200,9 @@ static uint8_t dac_write(uint8_t channel, uint8_t code)
 }
 
 
-/* Timer1 (1 s time base for M) */
+/* Timer1 */
 
-/*
- * CTC mode, prescaler 1024: 16 MHz / 1024 = 15625 counts per second, so
- * OCF1A sets once a second. TOP is 15624 because the count includes 0.
- */
+/* CTC mode, prescaler 1024: 15625 counts per second, so OCF1A sets every 1 s. */
 static void timer1_init(void)
 {
     TCCR1A = 0;
@@ -235,17 +210,13 @@ static void timer1_init(void)
     OCR1A = TICKS_1S - 1;
 }
 
-/* Restarts the 1 s period from now. */
 static void timer1_restart(void)
 {
     TCNT1 = 0;
-    TIFR1 = (1 << OCF1A);   /* writing 1 clears the flag */
+    TIFR1 = (1 << OCF1A);
 }
 
-/*
- * Waits for the next s one-second ticks. TCNT1 keeps running between
- * calls, so time spent printing doesn't push later samples back.
- */
+/* The timer keeps running while printing, so samples don't drift. */
 static void wait_seconds(uint8_t s)
 {
     while (s--) {
@@ -256,7 +227,7 @@ static void wait_seconds(uint8_t s)
 }
 
 
-/* Command handlers */
+/* Commands */
 
 static void cmd_get(void)
 {
@@ -265,7 +236,6 @@ static void cmd_get(void)
     printf("v=%u.%03u V\n", mv / 1000, mv % 1000);
 }
 
-/* First sample is taken right away, then one every dt seconds. */
 static void cmd_multi(uint8_t n, uint8_t dt)
 {
     uint8_t i;
@@ -287,7 +257,7 @@ static void cmd_multi(uint8_t n, uint8_t dt)
 static void cmd_set(uint8_t channel, uint16_t centivolts)
 {
     uint8_t code = dac_code(centivolts);
-    /* actual output voltage for this code, rounded to the nearest 0.01 V */
+    /* actual output for this code, rounded to 0.01 V */
     uint16_t cv = (uint16_t)((code * DAC_VREF_CV + DAC_STEPS / 2) / DAC_STEPS);
 
     if (!dac_write(channel, code)) {
@@ -298,9 +268,6 @@ static void cmd_set(uint8_t channel, uint16_t centivolts)
     printf("DAC channel %u set to %u.%02u V (%ud)\n",
            channel, cv / 100, cv % 100, code);
 }
-
-
-/* Command parser */
 
 static void handle_line(const char *line)
 {
@@ -358,8 +325,8 @@ int main(void)
     stdout = &uart_out;
     adc_init();
     timer1_init();
-    i2c_init();     /* library sets 100 kHz SCL; needs 4.7k pull-ups on A4/A5 */
-    sei();                                      /* library is interrupt driven */
+    i2c_init();                                 /* 100 kHz SCL */
+    sei();                                      /* UART library uses interrupts */
 
     printf("Lab5 analog interface ready\n");
 
