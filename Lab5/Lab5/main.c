@@ -287,17 +287,16 @@ static void cmd_multi(uint8_t n, uint8_t dt)
 static void cmd_set(uint8_t channel, uint16_t centivolts)
 {
     uint8_t code = dac_code(centivolts);
-    /* actual output in mV, so the quantization error is visible */
-    uint16_t mv = (uint16_t)((code * DAC_VREF_CV * 10) / DAC_STEPS);
+    /* actual output voltage for this code, rounded to the nearest 0.01 V */
+    uint16_t cv = (uint16_t)((code * DAC_VREF_CV + DAC_STEPS / 2) / DAC_STEPS);
 
     if (!dac_write(channel, code)) {
         printf("Error: no response from DAC (check I2C wiring)\n");
         return;
     }
 
-    printf("DAC channel %u set to %u.%02u V (code %u, output %u.%03u V)\n",
-           channel, centivolts / 100, centivolts % 100,
-           code, mv / 1000, mv % 1000);
+    printf("DAC channel %u set to %u.%02u V (%ud)\n",
+           channel, cv / 100, cv % 100, code);
 }
 
 
